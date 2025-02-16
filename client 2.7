@@ -1,0 +1,61 @@
+import socket
+from threading import Thread
+import os
+
+HOST = '127.0.0.1'
+PORT = 88
+
+def read_exact(client_socket, num_bytes):
+    buffer = b''
+    while len(buffer) < num_bytes:
+        chunk = client_socket.recv(num_bytes - len(buffer))
+        if not chunk:
+            return None
+        buffer += chunk
+    return buffer.decode()
+
+def handle_incoming_messages(sock):
+    while True:
+        try:
+            header = read_exact(sock, 4)
+            if not header or not header.isdigit():
+                print("Received an invalid header from the server. Disconnecting...")
+                break
+
+            content_length = int(header)
+            content = read_exact(sock, content_length)
+            if not content:
+                break
+
+            print(f"Server says: {content}")
+        except Exception as err:
+            print(f"Error receiving message: {err}")
+            break
+
+def initiate_client():
+    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        connection.connect((HOST, PORT))
+        print(f"Successfully connected to {HOST}:{PORT}")
+
+        Thread(target=handle_incoming_messages, args=(connection,), daemon=True).start()
+
+        while True:
+            user_message = input("Your message (type 'exit' to quit): ")
+            if user_message.strip().lower() == 'exit':
+                print("Ending session...")
+                break
+
+            try:
+                formatted_message = f"{len(user_message):04}{user_message}"
+                connection.send(formatted_message.encode())
+            except Exception as send_err:
+                print(f"Error sending message: {send_err}")
+    except Exception as conn_err:
+        print(f"Unable to establish connection: {conn_err}")
+    finally:
+        connection.close()
+        print("Disconnected from server.")
+
+if __name__ == "__main__":
+    initiate_client()
