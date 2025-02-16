@@ -1,0 +1,148 @@
+import socket
+from threading import Thread
+import glob
+import os
+import shutil
+import subprocess
+import pyautogui
+
+CONNECTION_LIMIT = 20
+LISTEN_PORT = 88
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.bind(('127.0.0.1', LISTEN_PORT))
+active_clients = []
+
+def list_directory_contents(directory):
+    try:
+        target_directory = directory[4:].strip()
+        contents = glob.glob(os.path.join(target_directory, "*.*"))
+        return "\n".join(contents) if contents else "No files found or invalid directory."
+    except Exception as error:
+        return f"Error accessing directory: {error}"
+
+def remove_file(command):
+    try:
+        file_to_delete = command[7:].strip()
+        if os.path.exists(file_to_delete):
+            os.remove(file_to_delete)
+            return f"Deleted: {file_to_delete}"
+        return f"File does not exist: {file_to_delete}"
+    except Exception as error:
+        return f"Error deleting file: {error}"
+
+def duplicate_file(command):
+    try:
+        parts = command[5:].strip().split()
+        if len(parts) != 2:
+            return "COPY format: COPY <source> <destination>"
+        source, destination = parts
+        if os.path.exists(source):
+            shutil.copy(source, destination)
+            return f"Copied from {source} to {destination}"
+        return f"Source file not found: {source}"
+    except Exception as error:
+        return f"Error copying file: {error}"
+
+def run_program(command):
+    try:
+        program = command[8:].strip()
+        if not os.path.exists(program):
+            return f"Executable not found: {program}"
+        exit_code = subprocess.call(program, shell=True)
+        return "Executed successfully." if exit_code == 0 else f"Execution failed with code {exit_code}."
+    except Exception as error:
+        return f"Error executing program: {error}"
+
+def capture_screenshot():
+    try:
+        save_path = os.path.join(os.getcwd(), "screenshot.jpg")
+        pyautogui.screenshot().save(save_path)
+        return f"Screenshot saved to {save_path}"
+    except Exception as error:
+        return f"Error taking screenshot: {error}"
+
+def transfer_screenshot(client_socket):
+    try:
+        screenshot_file = os.path.join(os.getcwd(), "screenshot.jpg")
+        if not os.path.exists(screenshot_file):
+            return "Screenshot file missing."
+
+        file_size = os.path.getsize(screenshot_file)
+        client_socket.send(f"{len(str(file_size)).zfill(4)}{file_size}".encode())
+
+        with open(screenshot_file, 'rb') as file:
+            while chunk := file.read(1024):
+                client_socket.send(chunk)
+        return "Screenshot sent."
+    except Exception as error:
+        return f"Error sending screenshot: {error}"
+
+def receive_exact(client_socket, bytes_expected):
+    buffer = b''
+    while len(buffer) < bytes_expected:
+        chunk = client_socket.recv(bytes_expected - len(buffer))
+        if not chunk:
+            return None
+        buffer += chunk
+    return buffer.decode()
+
+def client_interaction(client_socket, client_address):
+    print(f"Client {client_address} connected.")
+    active_clients.append(client_socket)
+    try:
+        while True:
+            header = receive_exact(client_socket, 4)
+            if not header or not header.isdigit():
+                print(f"Invalid header from {client_address}. Ignoring.")
+                client_socket.recv(1024)  # Clear remaining data
+                client_socket.send("0004ERR".encode())
+                continue
+
+            body = receive_exact(client_socket, int(header))
+            if not body:
+                break
+
+            print(f"Command from {client_address}: {body}")
+
+            if body.lower().startswith("dir"):
+                response = list_directory_contents(body)
+            elif body.lower().startswith("delete"):
+                response = remove_file(body)
+            elif body.lower().startswith("copy"):
+                response = duplicate_file(body)
+            elif body.lower().startswith("execute"):
+                response = run_program(body)
+            elif body.lower().startswith("screenshot_take"):
+                response = capture_screenshot()
+            elif body.lower().startswith("photo_send"):
+                response = transfer_screenshot(client_socket)
+            else:
+                response = "Unknown command."
+
+            formatted_response = f"{len(response):04}{response}"
+            client_socket.send(formatted_response.encode())
+    except Exception as error:
+        print(f"Error with client {client_address}: {error}")
+    finally:
+        print(f"Client {client_address} disconnected.")
+        active_clients.remove(client_socket)
+        client_socket.close()
+
+def manage_connections():
+    while True:
+        try:
+            print("Awaiting new connections...")
+            connection, address = server_socket.accept()
+            Thread(target=client_interaction, args=(connection, address)).start()
+        except Exception as error:
+            print(f"Error accepting connections: {error}")
+            break
+    print("Server shutting down.")
+
+if __name__ == "__main__":
+    server_socket.listen(CONNECTION_LIMIT)
+    print(f"Server active on port {LISTEN_PORT}")
+    connection_thread = Thread(target=manage_connections)
+    connection_thread.start()
+    connection_thread.join()
+    server_socket.close()
